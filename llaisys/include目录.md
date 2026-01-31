@@ -20,7 +20,7 @@
 └────────────────────────────┘
 ```
 
-## llaisys.h
+# llaisys.h
 
 `llaisys.h` 是 **LLAISYS Runtime 的最底层 C ABI 接口定义文件**。
 
@@ -148,7 +148,7 @@
    #endif // __LLAISYS_H__
    ```
 
-## ops.h
+# ops.h
 
 定义了 LLAISYS Runtime 对外暴露的“**算子级 C ABI 接口**”
 
@@ -224,7 +224,7 @@
 
    如果这个文件变化，则python绑定要改、文档要改、所有模型代码要改。所以它的设计一定是少而稳。所以它是接口定义文件，而不是实现文件。这正好符合Runtime的设计原则：“接口稳定，内部实现可以随意推翻重写”
 
-## runtime.h
+# runtime.h
 
 这是**“Runtime 能力本身的抽象入口”**，它定义了 LLAISYS Runtime 的“函数表（function table）接口”，用于在运行时按设备类型（CPU / NVIDIA）获取一整套底层执行能力。
 
@@ -463,3 +463,106 @@
    ```
 
    后果是：算子代码不可维护、新设备要改全工程、根本不可能教学 / 扩展。
+
+# tensor.h
+
+它定义了 LLAISYS 中唯一的**基础数据对象**：Tensor，并提供一个稳定的**C API**接口来操纵它。
+
+1. 代码
+
+   ```c
+   #ifndef LLAISYS_TENSOR_H
+   #define LLAISYS_TENSOR_H
+   
+   #include "../llaisys.h"
+   
+   __C {
+       typedef struct LlaisysTensor *llaisysTensor_t;//1️⃣为什么 Tensor 用「不透明指针」？struct LlaisysTensor的真实定义在.cpp，头文件里 完全隐藏内部布局，外部只能通过API操作。好处：ABI稳定：可以跨语言（Python / ctypes / Rust）、封装：不允许用户直接改 shape / data 指针、可扩展：内部可加 refcount / stream / layout。
+       
+   //2️⃣创建 / 销毁：它们负责：保存 shape / stride / dtype、分配 设备或主机内存、绑定 device_type + device_id、初始化 runtime API 指针。
+       __export llaisysTensor_t tensorCreate(
+           size_t * shape,
+           size_t ndim,
+           llaisysDataType_t dtype,
+           llaisysDeviceType_t device_type,
+           int device_id);
+   
+       __export void tensorDestroy(
+           llaisysTensor_t tensor);
+       
+   //3️⃣Tensor 的“只读元信息接口”：这些函数不涉及计算，只读状态。为什么这些不能直接暴露结构体字段？stride 可能是 view / permute 后算出来的，contiguous 不是 static 属性，device 可能后续支持迁移。📌 Tensor 是逻辑对象，不是裸内存块。
+       __export void *tensorGetData(
+           llaisysTensor_t tensor);//tensorGetData 的真实地位：这不是“随便给你指针”。它的语义是：返回 该 Tensor 当前 device 上的底层数据指针。设备是CPU的话，返回malloc的host pointer，CUDA的话，返回void* device pointer，Ascend返回aclrtMalloc pointer。📌 这是危险但必要的：ops 层要把这个指针喂给 kernel、Python 绑定要访问数据
+   
+       __export size_t tensorGetNdim(
+           llaisysTensor_t tensor);
+   
+       __export void tensorGetShape(
+           llaisysTensor_t tensor,
+           size_t * shape);
+   
+       __export void tensorGetStrides(
+           llaisysTensor_t tensor,
+           ptrdiff_t * strides);
+   
+       __export llaisysDataType_t tensorGetDataType(
+           llaisysTensor_t tensor);
+   
+       __export llaisysDeviceType_t tensorGetDeviceType(
+           llaisysTensor_t tensor);
+   
+       __export int tensorGetDeviceId(
+           llaisysTensor_t tensor);
+   
+       __export uint8_t tensorIsContiguous(
+           llaisysTensor_t tensor);
+       
+   //5️⃣tensorDebug 的真实作用，通常用于打印 shape / stride / dtype / device、检查 contiguous、教学调试
+       __export void tensorDebug(
+           llaisysTensor_t tensor);
+       
+       
+   //5️⃣tensorLoad：第一个“跨设备语义”，📌 这是：host → device 数据入口
+       __export void tensorLoad(
+           llaisysTensor_t tensor,
+           const void *data);
+   //他一般做的是：
+   //if (tensor->device == CPU)
+   //    memcpy(...)
+   //else
+   //    runtime->memcpy_sync(tensor->data, data, bytes, HOST_TO_DEVICE);
+   
+       
+   //4️⃣Tensor 的“形状与视图语义”（核心设计）
+       __export llaisysTensor_t tensorView(
+           llaisysTensor_t tensor,
+           size_t * shape,
+           size_t ndim);//语义：共享底层数据，只改变 shape / stride。不分配新内存、类似 PyTorch view、要求 contiguous（或能推导 stride）
+   
+       __export llaisysTensor_t tensorPermute(
+           llaisysTensor_t tensor,
+           size_t * order);//语义：只换维度顺序，不搬数据。stride 重新计算、contiguous 可能变 false。
+   
+       __export llaisysTensor_t tensorSlice(
+           llaisysTensor_t tensor,
+           size_t dim,
+           size_t start,
+           size_t end);//语义：子 Tensor 视图。
+   }
+   
+   #endif // LLAISYS_TENSOR_H
+   ```
+
+2. 它在整个项目中的“地位”？
+
+   Tensor 是 LLAISYS 中唯一被所有层共同依赖的对象：
+
+   ”ops 通过 Tensor 取 data“
+
+   ”runtime 为 Tensor 分配内存“
+
+   ”model 通过 Tensor 组织计算“
+
+   ”Python binding 直接操纵 Tensor“
+
+   
