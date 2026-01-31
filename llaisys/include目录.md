@@ -565,4 +565,112 @@
 
    ”Python binding 直接操纵 Tensor“
 
+# qwen2.h
+
+这个头文件**已经是 LLAISYS 的“最上层产物”了**，它定义了 LLAISYS 中一个“完整可用的大模型**（Qwen2）的 C ABI 接口”**。
+
+1. 代码
+
+   ```c
+   #ifndef LLAISYS_MODELS_QWEN2_H
+   #define LLAISYS_MODELS_QWEN2_H
    
+   #include "../tensor.h"//模型层直接持有 Tensor，模型 = 一组 Tensor + 计算逻辑，这里已经不再碰 runtime / stream / memcpy 了，因为这些都被 Tensor 和 ops 封装掉了。
+   
+   __C {
+   //1️⃣模型“结构元信息”，等价于 HuggingFace 的 config.json，这是“静态结构参数”，创建模型时必须给
+       struct LlaisysQwen2Meta {
+           llaisysDataType_t dtype;
+           //dtype：模型权重 / 激活精度
+           size_t nlayer, hs, nh, nkvh, dh, di, maxseq, voc;
+           //nlayer：Transformer 层数
+           //hs：hidden size
+           //nh：attention heads
+           //nkvh：KV heads
+           //dh：head dim
+           //di：FFN 中间维度
+           //maxseq：最大上下文
+           //voc： 词表大小
+           float epsilon, theta;
+           //epsilon：RMSNorm eps
+           //theta：RoPE θ
+           int64_t end_token;
+           //end_token：EOS
+       };
+   
+   //2️⃣LlaisysQwen2Weights：模型的“权重拓扑”
+   //① 全部是 llaisysTensor_t：权重是 Tensor、可以在 CPU / GPU、dtype 统一
+       struct LlaisysQwen2Weights {
+           llaisysTensor_t in_embed;
+           llaisysTensor_t out_embed;
+           llaisysTensor_t out_norm_w;   // a.k.a. model.norm.weight②这说明：这个接口是为“权重加载 / 映射”而设计的
+           llaisysTensor_t *attn_norm_w; // a.k.a. input_layernorm.weight
+           
+   //③ 多层权重用指针数组，语义是：attn_q_w[layer_id]，📌 这是显式 layer-wise 权重存储
+           llaisysTensor_t *attn_q_w;
+           llaisysTensor_t *attn_q_b;
+           llaisysTensor_t *attn_k_w;
+           llaisysTensor_t *attn_k_b;
+           llaisysTensor_t *attn_v_w;
+           llaisysTensor_t *attn_v_b;
+           llaisysTensor_t *attn_o_w;
+           llaisysTensor_t *mlp_norm_w; // a.k.a. post_attention_layernorm.weight
+           llaisysTensor_t *mlp_gate_w;
+           llaisysTensor_t *mlp_up_w;
+           llaisysTensor_t *mlp_down_w;
+       };
+   //3️⃣struct LlaisysQwen2Model; —— 不透明模型对象，和 Tensor 一样：外部不知道内部，内部一定包含：meta、weights、workspace、runtime context、kv cache 管理，📌 这是一个“有状态的模型实例”
+       struct LlaisysQwen2Model;
+   
+   //4️⃣模型生命周期 API
+   //（1）创建 / 销毁 ：   
+   //创建时发生：保存 meta、初始化 runtime context、处理多 device、分配中间 buffer、初始化 layer 结构，📌 这是模型级资源分配
+       __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
+   
+       __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model * model);
+   
+   //（2）获取权重结构 ：它的目的不是“用”，而是给外部 loader 填权重用，例如：weights->attn_q_w[i] = tensor;
+       __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model * model);
+   //（3）按名字设置权重（高级接口），这是为了：Python 绑定、通用权重加载器、避免暴露内部结构。
+       // Set a named weight tensor into the model. Returns 0 on success.
+       __export int llaisysQwen2ModelSetWeight(struct LlaisysQwen2Model * model, const char * name, llaisysTensor_t tensor);
+   //（4）Finalize：冻结模型：通常做：检查权重完整性、构建执行计划、初始化 KV cache layout、固化指针 / stride，📌 这是从“可配置” → “可推理”的切换点。
+       // Optional finalize call after all weights are set.
+       __export int llaisysQwen2ModelFinalize(struct LlaisysQwen2Model * model);
+   
+       // Check whether a named weight has been set. Returns 1 if present, 0 otherwise.
+       __export uint8_t llaisysQwen2ModelHasWeight(struct LlaisysQwen2Model * model, const char * name);
+   //（5）推理入口，语义是：一次 autoregressive 推理 step / sequence，内部调用 ops、更新 KV、返回 next token，📌 这是“模型即函数”的体现。
+       __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model * model, int64_t * token_ids, size_t ntoken);
+       
+   //5️⃣KV Cache API：模型“状态扩展”，KV cache 不在 model 内部，而是外置状态对象。
+   //好处：支持多 session、支持 batch / pipeline、支持 server 模式，📌 这已经是 推理系统设计级别。
+       // KV cache APIs
+       __export void *llaisysQwen2KVCreat(struct LlaisysQwen2Model * model, size_t max_tokens);
+       __export void llaisysQwen2KVDestroy(void *kv);
+       __export int llaisysQwen2KVAppend(void *kv, llaisysTensor_t k, llaisysTensor_t v);
+       __export size_t llaisysQwen2KVLen(void *kv);
+   }
+   #endif // LLAISYS_MODELS_QWEN2_H
+   ```
+
+2. 为什么这些 API 要放在这个头文件？
+
+   因为这是：“Qwen2 模型专属 ABI 合同”
+
+   ```
+   models/
+    └── qwen2.h   ← 一个完整可调用的模型产品
+   ```
+
+3. 它在整个项目中的地位
+
+   | 层级               | 文件                     |
+   | ------------------ | ------------------------ |
+   | **模型层（顶层）** | `llaisys_models_qwen2.h` |
+   | 算子层             | `ops.h`                  |
+   | 数据对象层         | `tensor.h`               |
+   | 运行时抽象层       | `runtime.h`              |
+   | ABI / 类型         | `llaisys.h`              |
+
+​      📌 **这是“最终用户真正调用的接口”**
