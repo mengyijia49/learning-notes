@@ -284,5 +284,182 @@
    
    ```
 
-   
+2. 为什么要放在这里？
 
+   1️⃣ 它比 `llaisys_ops.h` 更“底层”
+
+    Runtime API **不涉及模型语义**，只涉及“执行能力”。
+
+   2️⃣ 它是“后端插件接口”，不是模型接口
+
+   Runtime API 是给“设备后端实现者”用的，不是给模型写作者用的。
+
+   例如，写CPU backend、写 CUDA backend、将来写 Ascend backend，他们要实现的就是这张函数表。
+
+   3️⃣ 它天然支持“多后端 + 动态切换”
+
+   如果你把这些写成：`void llaisysMallocDevice(...);`就只能有一个实现
+
+   而现在：`const LlaisysRuntimeAPI *api = llaisysGetRuntimeAPI(device);`你可以：CPU 一套实现、GPU 一套实现、同一进程里切换，这是插件化 Runtime 的基础。
+
+3. 它在整个项目中的“地位”
+
+   `llaisys_runtime.h` 是 Runtime 后端与前端逻辑之间的“执行能力契约”，是整个系统能否支持多设备、多后端的关键抽象层。
+
+4. 为什么要用“函数指针表”而不是直接函数？
+
+   原因只有一个，但极其重要：ABI稳定+插件化+多实现。优势包括：后端可独立编译、不需要链接所有后端、易于扩展新设备、避免全局符号冲突。
+
+5. “函数指针表”本质是什么呢？
+
+   ```C
+   struct LlaisysRuntimeAPI {
+       get_device_count_api get_device_count;
+       set_device_api set_device;
+       device_synchronize_api device_synchronize;
+       create_stream_api create_stream;
+       destroy_stream_api destroy_stream;
+       stream_synchronize_api stream_synchronize;
+       malloc_device_api malloc_device;
+       free_device_api free_device;
+       malloc_host_api malloc_host;
+       free_host_api free_host;
+       memcpy_sync_api memcpy_sync;
+       memcpy_async_api memcpy_async;
+   };
+   ```
+
+   这是一个 **“设备运行时虚函数表（vtable）**， 用来屏蔽 CPU / CUDA / Ascend / OpenCL 等不同设备运行时差异。它和 C++ 的虚函数表 **语义等价**，只是用 **C 风格函数指针** 实现。
+
+6. “函数指针表”是怎么链接/切换设备的？
+
+   1️⃣ 核心机制：**每种设备 = 一张函数指针表**
+
+   工程里**一定存在**下面这种结构（不在头文件里，而在 `.cpp`）：
+
+   ```C
+   // cpu_runtime.cpp
+   static LlaisysRuntimeAPI cpu_runtime_api = {
+       .get_device_count = cpuGetDeviceCount,
+       .set_device = cpuSetDevice,
+       .device_synchronize = cpuDeviceSynchronize,
+       .create_stream = cpuCreateStream,
+       ...
+   };
+   ```
+
+   ```C
+   // cuda_runtime.cpp
+   static LlaisysRuntimeAPI cuda_runtime_api = {
+       .get_device_count = cudaGetDeviceCount,
+       .set_device = cudaSetDevice,
+       .device_synchronize = cudaDeviceSynchronize,
+       .create_stream = cudaCreateStream,
+       ...
+   };
+   ```
+
+   ```C
+   // ascend_runtime.cpp
+   static LlaisysRuntimeAPI ascend_runtime_api = {
+       .get_device_count = ascendGetDeviceCount,
+       .set_device = ascendSetDevice,
+       ...
+   };
+   ```
+
+   每个 `.cpp` 文件，定义 **一整张 `LlaisysRuntimeAPI` 表**，表里的函数 **全部是该设备的真实实现**。
+
+   2️⃣ 设备切换的“总入口”
+
+   `Runtime.h`头文件里的这个函数：
+
+   ```C
+   __export const LlaisysRuntimeAPI *llaisysGetRuntimeAPI(llaisysDeviceType_t);
+   ```
+
+   它是**整个切换机制的“中枢”**。典型实现：
+
+   ```C
+   // runtime_dispatch.cpp
+   const LlaisysRuntimeAPI *
+   llaisysGetRuntimeAPI(llaisysDeviceType_t device) {
+       switch (device) {
+       case LLAISYS_DEVICE_CPU:
+           return &cpu_runtime_api;
+       case LLAISYS_DEVICE_CUDA:
+           return &cuda_runtime_api;
+       case LLAISYS_DEVICE_ASCEND:
+           return &ascend_runtime_api;
+       default:
+           return nullptr;
+       }
+   }
+   ```
+
+   输入：设备类型 enum，输出：该设备对应的一整套运行时函数
+
+   3️⃣ 全局“当前运行时”的保存（真正的切换）
+
+   再看这个 API：
+
+   ```C
+   __export void llaisysSetContextRuntime(llaisysDeviceType_t, int);
+   ```
+
+   它通常做的事是：
+
+   ```c
+   static const LlaisysRuntimeAPI *current_runtime = nullptr;
+   static int current_device_id = 0;
+   
+   void llaisysSetContextRuntime(llaisysDeviceType_t type, int device_id) {
+       current_runtime = llaisysGetRuntimeAPI(type);
+       current_runtime->set_device(device_id);
+       current_device_id = device_id;
+   }
+   ```
+
+   `current_runtime` 指向哪张表,整个系统之后用的就是哪种设备
+
+7. 这些函数是“在哪里被调用”的？
+
+   你不会在算子里直接看到 `cudaMalloc` 或 `aclrtMalloc`，而是看到：
+
+   ```C
+   current_runtime->malloc_device(size);
+   current_runtime->memcpy_async(dst, src, size, kind, stream);
+   ```
+
+   举个完整调用链例子:
+
+   ① 用户代码
+
+   ```c++
+   Tensor t(shape, DTYPE_F16, LLAISYS_DEVICE_CUDA);
+   ```
+
+   ② Tensor 构造函数里
+
+   ```
+   auto rt = llaisysGetRuntimeAPI(device_type);
+   data = rt->malloc_device(bytes);
+   ```
+
+   ③ 实际执行的是
+
+   CPU → `malloc` 、CUDA → `cudaMalloc`、Ascend → `aclrtMalloc`。Tensor 完全不知道它跑在哪个设备上。
+
+8. 为什么一定要放在 `runtime` 层？
+
+   如果不这么做，会怎样？❌ 算子里写：
+
+   ```c++
+   #ifdef USE_CUDA
+   cudaMalloc(...)
+   #elif USE_ASCEND
+   aclrtMalloc(...)
+   #endif
+   ```
+
+   后果是：算子代码不可维护、新设备要改全工程、根本不可能教学 / 扩展。
