@@ -12,7 +12,7 @@
 
 ------
 
-​    从数据视角看，Triton 是一种 Tile-level（分块级）编程模型。**它位于 **Tensor-level（张量级）** 与 **Thread-level（线程级）** 之间，通过高层 API 抽象隐藏硬件细节，把大量底层工作交给编译器（MLIR / LLVM / 后端）， 而开发者主要负责 **数据分块（tiling）与核间调度策略**。
+​    从数据视角看，Triton 是一种 Tile-level（分块级）编程模型。它位于 **Tensor-level（张量级）** 与 **Thread-level（线程级）** 之间，通过高层 API 抽象隐藏硬件细节，把大量底层工作交给编译器（MLIR / LLVM / 后端）， 而开发者主要负责 **数据分块（tiling）与核间调度策略**。
 
 <img src="infiniTensor-Triton-Ascend编程.assets/image-20260201211751795.png" alt="image-20260201211751795" style="zoom:67%;" />
 
