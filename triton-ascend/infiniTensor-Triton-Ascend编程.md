@@ -18,29 +18,29 @@
 
 1️⃣ Tensor level（最左边）
 
-​    ① 含义：把数据当作**整体张量**，不显式关心：分块、线程、寄存器 / shared memory、内存访存模式。
+​    🔷  含义：把数据当作**整体张量**，不显式关心：分块、线程、寄存器 / shared memory、内存访存模式。
 
-​    ② 典型代表：PyTorch / TensorFlow，算子级 IR（如 ONNX、Relay 高层）
+​    🔷  典型代表：PyTorch / TensorFlow，算子级 IR（如 ONNX、Relay 高层）
 
-​    ③ 特点：编译器控制最多，开发者几乎不能控制执行细节。
+​    🔷  特点：编译器控制最多，开发者几乎不能控制执行细节。
 
 2️⃣ Tile level（中间，Triton 所在的位置）
 
-​    ① Tile含义：把一个大张量 **切成规则的小块（tile / block）**，每个 tile 作为一个**独立的并行任务**。
+​    🔷  Tile含义：把一个大张量 **切成规则的小块（tile / block）**，每个 tile 作为一个**独立的并行任务**。
 
-​    ② Triton 在这里做了什么？
+​    🔷  Triton 在这里做了什么？
 
-​        ❶ 用户显式指定：tile 的 shape、tile 如何映射到 program_id、数据分块策略。
+​        🔹用户显式指定：tile 的 shape、tile 如何映射到 program_id、数据分块策略。
 
-​        ❷ 编译器自动完成：tile 内的线程映射、向量化（SIMD）、内存合并（coalescing）、shared memory / local memory 管理、pipeline / latency hiding。
+​        🔹编译器自动完成：tile 内的线程映射、向量化（SIMD）、内存合并（coalescing）、shared memory / local memory 管理、pipeline / latency hiding。
 
 3️⃣ Thread level（最右边）
 
-​    ① 含义：显式操纵线程 / warp / wavefront，手写同步、访存、bank conflict。
+​    🔷  含义：显式操纵线程 / warp / wavefront，手写同步、访存、bank conflict。
 
-​    ② 典型代表：CUDA C / HIP、OpenCL、汇编级 kernel。
+​    🔷  典型代表：CUDA C / HIP、OpenCL、汇编级 kernel。
 
-​    ③ 特点：用户控制最多，开发成本高、可移植性差
+​    🔷  特点：用户控制最多，开发成本高、可移植性差
 
 ------
 
@@ -64,17 +64,17 @@
 
 ​    对用户而言，编程范式仍然是 **社区 Triton**，不需要感知 Ascend NPU 的硬件细节，Triton-Ascend **完整兼容社区 Triton 的 DSL 与开发模式**。
 
-2️⃣ 编译与优化主线（系统核心）① ② ③ ④ ⑤
+2️⃣ 编译与优化主线（系统核心）
 
-​    ① Triton Ascend Backend：控制与调度层
+​    🔷  Triton Ascend Backend：控制与调度层
 
 ​    核心职责是自动调优、JIT编译、运行时调度与调用。本质作用是承接社区 Triton 的“执行与调度语义”，并对接 Ascend 后端。
 
-​    ② Triton Adapter：语义转换与访存优化层
+​    🔷  Triton Adapter：语义转换与访存优化层
 
 ​    在编译过程中，Triton Adapter 作为关键适配层，负责将面向 GPU 执行模型的 Triton IR 转换为更适合 SIMD/NPU 架构的 Linalg IR。昇腾是 **SIMD 架构**，对 **连续、规则访存**极其敏感。Triton 中可能存在离散访存或GPU 风格的访存假设，因此在 Triton Adapter 中做 **访存模式重写与优化**和 **IR lowering：Triton IR → Linalg IR**。
 
-​    ③ AscendNPU IR：硬件语义落地层
+​    🔷  AscendNPU IR：硬件语义落地层
 
 ​    随后，IR 被进一步降低至 AscendNPU IR。该 IR 分为高、低两个层级：高层 IR 侧重于硬件无关的通用优化，而低层 IR 则精确刻画昇腾 NPU 的硬件控制能力，支持 Mix 算子融合、内存自动分配与自动同步等优化策略，从而将原本需要开发者在 Ascend C 层手工完成的性能调优工作转移至毕昇编译器中自动完成。
 
