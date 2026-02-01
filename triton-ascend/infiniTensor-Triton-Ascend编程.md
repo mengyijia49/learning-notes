@@ -92,9 +92,13 @@ Triton 本质上是一种面向 GPU 的编程语言，其原生编译路径围�
 
 ## 2.Triton-Ascend的开发环境
 
-1️⃣ 下载CANN（昇腾上的基础的软件栈），提供了编程语言、高封装的算子库、毕昇编译器、Runtime driver。在https://hiascend.com/cann首页可以下载，还有开源代码仓，以及CANN的文档。Triton-Ascend要求CANN版本 $\ge 8.3$ 。在版本选择中选择版本和CPU架构，就可以获得软件包。在开发包里，我们需要Toolkit和kernels。按照文档安装即可。
+1️⃣ 下载CANN
 
-2️⃣安装Triton-Ascend。https://gitcode.com/Ascend/triton-ascend/。第一步安装依赖的包，requirement文件列出了所有需要安装的软件包。安装好依赖以后，就可以完成部署和运行。
+CANN是昇腾上的基础的软件栈，提供了编程语言、高封装的算子库、毕昇编译器、Runtime driver。在`https://hiascend.com/cann`首页可以下载，还有开源代码仓，以及CANN的文档。Triton-Ascend要求CANN版本 $\ge 8.3$ 。在版本选择中选择版本和CPU架构，就可以获得软件包。在开发包里，我们需要Toolkit和kernels。按照文档安装即可。
+
+2️⃣安装Triton-Ascend
+
+`https://gitcode.com/Ascend/triton-ascend/`。第一步安装依赖的包，requirement文件列出了所有需要安装的软件包。安装好依赖以后，就可以完成部署和运行。
 
 ## 3.Triton算子的开发范式
 
